@@ -65,6 +65,7 @@ export default function Home() {
   // QR scanner state
   const [scanning, setScanning] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanReqRef = useRef<number | null>(null);
   const [scannerError, setScannerError] = useState<string | null>(null);
@@ -401,7 +402,56 @@ export default function Home() {
       }
     }
 
-    setScannerError("BarcodeDetector not available in this browser.");
+    // Try jsQR fallback: draw video frames to canvas and decode
+    try {
+      const mod = await import("jsqr");
+      const jsQR = ((mod && (mod as Record<string, unknown>).default) ||
+        mod) as (
+        data: Uint8ClampedArray,
+        width: number,
+        height: number,
+      ) => { data: string } | null;
+      const canvas = canvasRef.current || document.createElement("canvas");
+      canvasRef.current = canvas;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Failed to get canvas context");
+
+      const detect = async () => {
+        try {
+          if (!video || video.readyState < 2) {
+            scanReqRef.current = requestAnimationFrame(detect);
+            return;
+          }
+          const w = video.videoWidth || video.clientWidth;
+          const h = video.videoHeight || video.clientHeight;
+          if (!w || !h) {
+            scanReqRef.current = requestAnimationFrame(detect);
+            return;
+          }
+          canvas.width = w;
+          canvas.height = h;
+          ctx.drawImage(video, 0, 0, w, h);
+          const imageData = ctx.getImageData(0, 0, w, h);
+          const code = jsQR(imageData.data, w, h);
+          if (code && code.data) {
+            setTicketsText((prev) =>
+              prev ? prev + "\n" + code.data : code.data,
+            );
+            stopScanner();
+            return;
+          }
+        } catch (e) {
+          // ignore and continue
+        }
+        scanReqRef.current = requestAnimationFrame(detect);
+      };
+      detect();
+      return;
+    } catch (e: unknown) {
+      setScannerError(
+        "No scanner available: install `jsqr` (npm i jsqr) or use a browser with BarcodeDetector",
+      );
+    }
   }
 
   // cleanup scanner on unmount
